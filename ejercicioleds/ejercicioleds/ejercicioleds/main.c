@@ -1,21 +1,23 @@
 /*
- * Ejercicio1.c
+ * ejercicioleds.c
  *
- * Created: 8/11/2023 23:33:01
+ * Created: 10/11/2023 11:08:07
  * Author : Hector
  */ 
+
+//-------------MICRO DE LOS LEDS-------------
 
 // Definiciones -----------------------------------------------------------------------------------------
 #define F_CPU 16000000UL		// 16 MHz Frecuencia del cristal.
 
 
 // Pines usados por la librería lcd_2560.h:
-#define RS	eS_PORTA0			// Pin RS = PA0 (22) (Reset).
-#define EN	eS_PORTA1			// Pin EN = PA1 (23) (Enable).
-#define D4	eS_PORTA2			// Pin D4 = PA2 (24) (Data D4).
-#define D5	eS_PORTA3			// Pin D5 = PA3 (25) (Data D5).
-#define D6	eS_PORTA4			// Pin D6 = PA4 (26) (Data D6).
-#define D7	eS_PORTA5			// Pin D7 = PA5 (27) (Data D7).
+#define RS	eS_PORTC0			// Pin RS = PA0 (21) (Reset).
+#define EN	eS_PORTC1			// Pin EN = PA1 (22) (Enable).
+#define D4	eS_PORTC2			// Pin D4 = PA2 (23) (Data D4).
+#define D5	eS_PORTC3			// Pin D5 = PA3 (24) (Data D5).
+#define D6	eS_PORTC4			// Pin D6 = PA4 (25) (Data D6).
+#define D7	eS_PORTC5			// Pin D7 = PA5 (26) (Data D7).
 
 
 // Macros y constantes:
@@ -48,6 +50,7 @@ void confcomunicacion();
 void delay_ms();
 void calcularvelocidad();
 
+char buffer[16];				// Vector de caracteres que almacena string (16 = Nº de filas del LCD).
 volatile int8_t motor=0;
 volatile int8_t direccion=0;	//0 sentido horario 1 sentido antihorario
 volatile int8_t flagp2=0;
@@ -89,42 +92,17 @@ int main(void)
 	confCONVAD();
 	confcomunicacion();
 	sei();												//habilito interrupciones globables
-	
-//########### bucle ######
+	Lcd4_Init();				// Inicializa el LCD (siempre debe estar antes de usar el LCD).
+	Lcd4_Clear();				// Borra el display.
+//-------------- bucle ------------------
 
     while (1) 
     {
-		//calcularvelocidad();
-		if (motor)
-		{
-			//sentido antihorario
-			if (direccion)
-			{
-				PORTA=(1<<PA3)|(0<<PA2)|(0<<PA1)|(1<<PA0);
-				delay_ms(velocidad);
-				PORTA=(0<<PA3)|(0<<PA2)|(1<<PA1)|(1<<PA0);
-				delay_ms(velocidad);
-				PORTA=(0<<PA3)|(1<<PA2)|(1<<PA1)|(0<<PA0);
-				delay_ms(velocidad);
-				PORTA=(1<<PA3)|(1<<PA2)|(0<<PA1)|(0<<PA0);
-				delay_ms(velocidad);
-				
-			}
-			else     //sentido horario
-			{
-				PORTA=(1<<PA3)|(0<<PA2)|(0<<PA1)|(1<<PA0);
-				delay_ms(velocidad);
-				PORTA=(1<<PA3)|(1<<PA2)|(0<<PA1)|(0<<PA0);
-				delay_ms(velocidad);
-				PORTA=(0<<PA3)|(1<<PA2)|(1<<PA1)|(0<<PA0);
-				delay_ms(velocidad);
-				PORTA=(0<<PA3)|(0<<PA2)|(1<<PA1)|(1<<PA0);
-				delay_ms(velocidad);				
-			}
-			
-		}
-		
-		
+		calcularvelocidad();
+		sprintf(&buffer[0],"velocidad: ", velocidad);	// Convierte TEMPERATURA a string (\337 es el código para °).
+		Lcd4_Set_Cursor(1,0);									// Posiciona cursor en fila 1 (de 2) y columna 0 (de 16).
+		Lcd4_Write_String(buffer);								// Escribe string.
+		_delay_ms(2);											// Retardo (sólo para no estar permanentemente
 	} 
 }
 
@@ -194,4 +172,7 @@ void calcularvelocidad()
 {
 	velocidad=(lecturavel/1023.0)*150+50;
 }
+
+
+
 
