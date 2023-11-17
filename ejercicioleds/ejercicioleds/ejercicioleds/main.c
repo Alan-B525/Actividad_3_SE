@@ -12,12 +12,12 @@
 
 
 // Pines usados por la librería lcd_2560.h:
-#define RS	eS_PORTC0			// Pin RS = PA0 (21) (Reset).
-#define EN	eS_PORTC1			// Pin EN = PA1 (22) (Enable).
-#define D4	eS_PORTC2			// Pin D4 = PA2 (23) (Data D4).
-#define D5	eS_PORTC3			// Pin D5 = PA3 (24) (Data D5).
-#define D6	eS_PORTC4			// Pin D6 = PA4 (25) (Data D6).
-#define D7	eS_PORTC5			// Pin D7 = PA5 (26) (Data D7).
+#define RS	eS_PORTA0			// Pin RS = PC0 (21) (Reset).
+#define EN	eS_PORTA1			// Pin EN = PC1 (22) (Enable).
+#define D4	eS_PORTA2			// Pin D4 = PC2 (23) (Data D4).
+#define D5	eS_PORTA3			// Pin D5 = PC3 (24) (Data D5).
+#define D6	eS_PORTA4			// Pin D6 = PC4 (25) (Data D6).
+#define D7	eS_PORTA5			// Pin D7 = PC5 (26) (Data D7).
 
 
 // Macros y constantes:
@@ -36,7 +36,6 @@
 #include <avr/io.h>				// Contiene definiciones estándares (puertos, memorias, etc.)
 #include <util/delay.h>			// Contiene macros para generar retardos.
 #include <avr/interrupt.h>		// Contiene macros para uso de interrupciones.
-
 //-----------------------Libreria de display------------------------
 #include "lcd_2560.h"
 
@@ -50,12 +49,19 @@ void confcomunicacion();
 void delay_ms();
 void calcularvelocidad();
 
+
 char buffer[16];				// Vector de caracteres que almacena string (16 = Nº de filas del LCD).
-volatile int8_t motor=0;
+volatile int8_t motor=0;		// apagado
 volatile int8_t direccion=0;	//0 sentido horario 1 sentido antihorario
 volatile int8_t flagp2=0;
-volatile int16_t velocidad=40;
-volatile int16_t lecturavel=0;
+volatile int8_t flag=0;
+volatile int velocidad=0;
+volatile float lecturavel=0;
+volatile int velocidaddis=0;
+volatile int vel=0; 
+volatile int vel_a=0;
+//debe transmitirse estado/velocidad sentido de giro 
+
 
 //PB1 enciende/apaga
 ISR(INT0_vect)
@@ -73,15 +79,22 @@ ISR(INT1_vect)
 	_delay_ms(10);
 	if (is_low(PIND,1))
 	{
-		tbi(direccion,0);
-		flagp2=1;	
+		if(!motor) tbi(direccion,0);	//motor apagado
+		else
+		{
+			//TCCR0B = 0x00;		//detiene el timer 
+			flagp2=1;
+			vel =velocidaddis;
+			vel_a=velocidaddis;		//guarda la velocidad que esta seteada
+		}
 	}
 }
 
 ISR(TIMER0_COMPA_vect)
 {
 	convertirAD();
-	lecturavel=ADC;
+	lecturavel=ADCH;
+	tbi(PORTA,6);
 }
 
 int main(void)
@@ -98,18 +111,65 @@ int main(void)
 
     while (1) 
     {
-		calcularvelocidad();
-		sprintf(&buffer[0],"velocidad: ", velocidad);	// Convierte TEMPERATURA a string (\337 es el código para °).
+		
+		if(!flagp2) calcularvelocidad();		//convierte si no hay un apagado suave
+		
+//----------Display--------
+		if(motor)
+			sprintf(&buffer[0],"vel: %d%%   on ", velocidaddis);		//carga la velocidad y estado en el buffer
+		else
+			sprintf(&buffer[0],"vel: %d%%   off  ", velocidaddis);  		
 		Lcd4_Set_Cursor(1,0);									// Posiciona cursor en fila 1 (de 2) y columna 0 (de 16).
 		Lcd4_Write_String(buffer);								// Escribe string.
-		_delay_ms(2);											// Retardo (sólo para no estar permanentemente
+		if(!direccion)
+			sprintf(&buffer[0],"Horario         ");
+		else
+			sprintf(&buffer[0],"Antihorario     ");
+		Lcd4_Set_Cursor(2,0);
+		Lcd4_Write_String(buffer);
+		if (flagp2)
+			_delay_ms(100);
+		else
+			_delay_ms(4);
+		
+//----------cambio de sentido suave ---------------
+/*
+		if (flag && flagp2)		//arranque suave
+		{
+			vel=+10;
+			motor=1;
+			if (vel>vel_a){
+				velocidaddis=vel_a;
+				tbi(direccion,0);
+				flag=0;
+				flagp2=0;
+				TCCR0B = 0x05;		//habilita el prescaler
+			}
+			else
+				velocidaddis=vel;
+		}
+		
+		if (flagp2	&& !flag)		//apagado suave
+		{
+			vel=-10;
+			if (vel<0){
+				velocidaddis=0;
+				motor=0;
+				tbi(direccion,0);
+				vel=0;
+				flag=1;
+			}
+			else
+				velocidaddis=vel;				
+		}
+	*/																
 	} 
 }
 
 
 void confpuertos()
 {
-	DDRA=0x00;			// Puerto A para manejo del motor
+	DDRA=0xFF;			// Puerto A para manejo del display
 	PORTA=0x00;			//Inicializo puerto A
 	
 	DDRD=0x00;			//puerto D todo como entrada pulsadores
@@ -118,7 +178,7 @@ void confpuertos()
 	DDRB=0b00001111;	//configuro como salidas los puertos de los leds
 	PORTB=0x00;
 	
-	DDRC=0b00111111;	// configuro salidas para el display
+	DDRC=0b11111111;	// configuro salidas para el motor
 	PORTC=0x00;			//inicializo el puerto C
 	
 	DDRF=0x00;			//todo el puerto F como entrada -ADC0
@@ -141,8 +201,8 @@ void conftimer()
 
 void confCONVAD()				// Config. del conversor AD. Opera en modo free-running.
 {	DIDR0 = 0x01;				// Desconecta la parte digital del pin ADC0/PF0.
-	ADMUX = 0x40;				// Config. la ref. de tensión tomada del pin AVCC (placa Arduino AVCC = Vcc = 5V).
-	// Conversión AD de 10 bits (ADLAR = 0) y con el Multiplexor selecciona canal 0 (ADC0/PF0).
+	ADMUX = 0x60;				// Config. la ref. de tensión tomada del pin AVCC (placa Arduino AVCC = Vcc = 5V).
+								// Conversión AD de 8 bits (ADLAR = 1) y con el Multiplexor selecciona canal 0 (ADC0/PF0).
 	ADCSRB = 0x00;				// Modo free-running.
 	ADCSRA = 0x87;				// Habilita funcionamiento del ADC (bit ADEN=1) y prescaler en 128.
 }
@@ -161,18 +221,17 @@ void confcomunicacion()
 	return;	
 }
 
+void calcularvelocidad()
+{
+	velocidad=63*lecturavel/256.0;	//velocidad a transmitir 
+	velocidaddis=100*velocidad/63.0;
+}
+
 void delay_ms(int t)
 {
 	while(t--)
 	_delay_ms(1);
 }
-
-
-void calcularvelocidad()
-{
-	velocidad=(lecturavel/1023.0)*150+50;
-}
-
 
 
 
