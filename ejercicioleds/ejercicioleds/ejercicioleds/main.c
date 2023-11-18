@@ -42,17 +42,20 @@
 //----------------Funciones-----------------------
 void confpuertos();
 void confinterrupciones();
-void conftimer();
+void conftimer0();
+void conftimer1();
 void convertirAD();
 void confCONVAD();
 void confcomunicacion();
 void delay_ms();
 void calcularvelocidad();
-
+void muestradisplay();
+void pulsadores();
 
 char buffer[16];				// Vector de caracteres que almacena string (16 = Nº de filas del LCD).
 volatile int8_t motor=0;		// apagado
-volatile int8_t direccion=0;	//0 sentido horario 1 sentido antihorario
+volatile int8_t direccion=1;	//0 sentido horario 1 sentido antihorario
+volatile int8_t flagp1=0;
 volatile int8_t flagp2=0;
 volatile int8_t flag=0;
 volatile int velocidad=0;
@@ -60,6 +63,10 @@ volatile float lecturavel=0;
 volatile int velocidaddis=0;
 volatile int vel=0; 
 volatile int vel_a=0;
+int velocidadtransmitir=0;
+
+volatile int cont=0;
+
 //debe transmitirse estado/velocidad sentido de giro 
 
 
@@ -69,7 +76,7 @@ ISR(INT0_vect)
 	_delay_ms(10);
 	if (is_low(PIND,0))
 	{
-		tbi(motor,0);	
+		flagp1=1;	
 	}	
 }
 
@@ -79,14 +86,7 @@ ISR(INT1_vect)
 	_delay_ms(10);
 	if (is_low(PIND,1))
 	{
-		if(!motor) tbi(direccion,0);	//motor apagado
-		else
-		{
-			//TCCR0B = 0x00;		//detiene el timer 
 			flagp2=1;
-			vel =velocidaddis;
-			vel_a=velocidaddis;		//guarda la velocidad que esta seteada
-		}
 	}
 }
 
@@ -94,6 +94,20 @@ ISR(TIMER0_COMPA_vect)
 {
 	convertirAD();
 	lecturavel=ADCH;
+}
+ISR(TIMER1_COMPA_vect)
+{
+	if(!direccion && motor )	//horario
+	{	
+		if(cont>3)cont=0;
+		PORTB=1<<cont++;
+		
+	}
+	if(direccion && motor )	//horario
+	{
+		if(cont<=0)cont=3;
+		PORTB=cont-->>1;
+	}
 	tbi(PORTA,6);
 }
 
@@ -101,7 +115,8 @@ int main(void)
 {	
 	confpuertos();
 	confinterrupciones();
-	conftimer();
+	conftimer0();
+	conftimer1();
 	confCONVAD();
 	confcomunicacion();
 	sei();												//habilito interrupciones globables
@@ -115,22 +130,10 @@ int main(void)
 		if(!flagp2) calcularvelocidad();		//convierte si no hay un apagado suave
 		
 //----------Display--------
-		if(motor)
-			sprintf(&buffer[0],"vel: %d%%   on ", velocidaddis);		//carga la velocidad y estado en el buffer
-		else
-			sprintf(&buffer[0],"vel: %d%%   off  ", velocidaddis);  		
-		Lcd4_Set_Cursor(1,0);									// Posiciona cursor en fila 1 (de 2) y columna 0 (de 16).
-		Lcd4_Write_String(buffer);								// Escribe string.
-		if(!direccion)
-			sprintf(&buffer[0],"Horario         ");
-		else
-			sprintf(&buffer[0],"Antihorario     ");
-		Lcd4_Set_Cursor(2,0);
-		Lcd4_Write_String(buffer);
-		if (flagp2)
-			_delay_ms(100);
-		else
-			_delay_ms(4);
+		
+		muestradisplay();
+		pulsadores();
+		
 		
 //----------cambio de sentido suave ---------------
 /*
@@ -191,12 +194,18 @@ void confinterrupciones()
 	EIMSK=(1<<INT0)|(1<<INT1);							//habilita las interrupciones de INT0 e INT1
 	EIFR=0x00;											//borra flag de interupt
 }
-void conftimer()
+void conftimer0()
 {	// Config. Timer0 modo CTC con OCR0A = TOP -> T = (1+OCR0A)*N/16MHz = 10ms.
 	TCCR0A = 0x02;				// Modo CTC.
 	TCCR0B = 0x05;				// Prescaler N = 1024.
 	TIMSK0 = 0x02;				// Habilita interrupción por igualación.
 	OCR0A = TOP0;				// Carga el valor de TOPE (155).
+}
+
+void conftimer1()
+{	// Config. Timer0 modo CTC con OCR0A = TOP -> T = (1+OCR0A)*N/16MHz = 10ms.
+	TCCR1A = 0x00;				// Modo CTC.
+	TIMSK1 = 0x02;				// Habilita interrupción por igualación.
 }
 
 void confCONVAD()				// Config. del conversor AD. Opera en modo free-running.
@@ -223,9 +232,52 @@ void confcomunicacion()
 
 void calcularvelocidad()
 {
-	velocidad=63*lecturavel/256.0;	//velocidad a transmitir 
-	velocidaddis=100*velocidad/63.0;
+	velocidadtransmitir=63*lecturavel/256.0;	//velocidad a transmitir entre 0 y 63
+	velocidad=(-2344/63.0*velocidadtransmitir)+3124;
+	//velocidad=(-150/63.0*velocidadtransmitir)+200;	//velocidad para controlar los leds y motor  
+	velocidaddis=100*velocidadtransmitir/63.0;		//velocidad que se debe mostrar en el display
 }
+void muestradisplay()
+{
+	if(motor)
+		sprintf(&buffer[0],"vel: %d%%   on ", velocidaddis);		//carga la velocidad y estado en el buffer
+	else
+		sprintf(&buffer[0],"vel: %d%%   off  ", velocidaddis);
+	Lcd4_Set_Cursor(1,0);									// Posiciona cursor en fila 1 (de 2) y columna 0 (de 16).
+	Lcd4_Write_String(buffer);								// Escribe string.
+	if(!direccion)
+		sprintf(&buffer[0],"Horario         ");
+	else
+		sprintf(&buffer[0],"Antihorario     ");
+	Lcd4_Set_Cursor(2,0);
+	Lcd4_Write_String(buffer);
+	_delay_ms(4);
+}
+
+void pulsadores()
+{
+	if (flagp1)
+	{
+		tbi(motor,0);
+		flagp1=0;
+		TCCR1B = 0x0D;				// Prescaler N = 1024.
+		OCR1A=16535;
+		PORTB=0x00;
+		if (direccion)cont=3;
+		else cont=0;
+	}
+	
+	if (flagp2 && !motor)		//si esta apagado toglea la direccion
+	{
+		tbi(direccion,0);
+		flagp2=0;
+	}
+	else
+	{				//apagado y arranque suave para el cambio de direccion si esta encendido 
+		
+	}
+}
+
 
 void delay_ms(int t)
 {
