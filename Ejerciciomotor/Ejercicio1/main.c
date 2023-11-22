@@ -5,11 +5,10 @@
  * Author : Hector
  */ 
 
-//-------------------MICRO MOTOR--------------
+//-------------------MICRO MOTOR(Esclavo)--------------
 
 // Definiciones -----------------------------------------------------------------------------------------
 #define F_CPU 16000000UL		// 16 MHz Frecuencia del cristal.
-
 
 // Pines usados por la librería lcd_2560.h:
 #define RS	eS_PORTA0			// Pin RS = PC0 (21) (Reset).
@@ -21,7 +20,10 @@
 
 
 // Macros y constantes:
-#define	TOP0			155						// TOPE del Timer 0.
+#define BAUD_3	9600UL							// Para velocidad de transmisión de 9600 bps
+#define VELOCx1	(F_CPU/(16UL*BAUD_3))-1			// Valor a cargar en reg. UBRR0
+
+#define	TOP0			255						// TOPE del Timer 0.
 #define	sbi(p,b)		p |= _BV(b)				//	sbi(p,b) setea el bit b de p.
 #define	cbi(p,b)		p &= ~(_BV(b))			//	cbi(p,b) borra el bit b de p.
 #define	tbi(p,b)		p ^= _BV(b)				//	tbi(p,b) togglea el bit b de p.
@@ -42,25 +44,30 @@
 //----------------Funciones-----------------------
 void confpuertos();
 void confinterrupciones();
-void conftimer();
-void convertirAD();
-void confCONVAD();
+void conftimer1();			//usado para la secuencia del motor
+void conftimer0();			//envio de datos desde un micro a otro
 void confcomunicacion();
 void delay_ms();
 void calcularvelocidad();
-
+void muestradisplay();
+void pulsadores();
 
 char buffer[16];				// Vector de caracteres que almacena string (16 = Nº de filas del LCD).
 volatile int8_t motor=0;		// apagado
 volatile int8_t direccion=0;	//0 sentido horario 1 sentido antihorario
-volatile int8_t flagp2=0;
-volatile int8_t flag=0;
-volatile int velocidad=0;
-volatile float lecturavel=0;
+volatile uint8_t flagp1=0x00;	
+volatile uint8_t flagp2=0x00;
+volatile uint8_t flagp3=0x00;
+volatile uint8_t flagp4=0x00;
+volatile uint8_t flagp5=0x00;
+volatile uint8_t flagp6=0x00;
+uint8_t sentido=0;
+volatile uint8_t flag=0;
+volatile uint16_t velocidad=0;
 volatile int velocidaddis=0;
-volatile int vel=0; 
-volatile int vel_a=0;
-int velocidadtransmitir=0;
+volatile int velocidadrecibida=0;
+volatile int cont=0;
+volatile int datos = 0;
 //debe transmitirse estado/velocidad sentido de giro 
 
 
@@ -70,7 +77,8 @@ ISR(INT0_vect)
 	_delay_ms(10);
 	if (is_low(PIND,0))
 	{
-		tbi(motor,0);	
+		flagp1=0x80;
+		flagp3=0x80;	
 	}	
 }
 
@@ -80,30 +88,53 @@ ISR(INT1_vect)
 	_delay_ms(10);
 	if (is_low(PIND,1))
 	{
-		if(!motor) tbi(direccion,0);	//motor apagado
-		else
-		{
-			//TCCR0B = 0x00;		//detiene el timer 
-			flagp2=1;
-			vel =velocidaddis;
-			vel_a=velocidaddis;		//guarda la velocidad que esta seteada
-		}
+			flagp2=0x40;
+			flagp4=0x40;
+	}
+}
+ISR(TIMER0_COMPA_vect)
+{
+	if(flag){
+		while (!(UCSR0A & (1 << UDRE0))); // Esperar a que el buffer de transmisión esté vacío
+		datos=(flagp3|flagp4);
+		UDR0 = (uint8_t)datos;
+		while (!(UCSR0A & (1 << TXC0))); // Esperar a que se complete la transmisión
+		flag=0;
+		flagp3=0x00;
+		flagp4=0x00;
+	}
+}
+ISR(TIMER1_COMPA_vect)
+{
+	if(!direccion && motor )	//horario
+	{	
+		if(cont>3)cont=0;
+		PORTB=(1<<cont++);
+	}
+	if(direccion && motor )	//antihorario
+	{
+		if(cont<0)cont=3;
+		PORTB=1<<cont--;
 	}
 }
 
-ISR(TIMER0_COMPA_vect)
-{
-	convertirAD();
-	lecturavel=ADCH;
-	tbi(PORTA,6);
+ISR(USART0_RX_vect) {
+	
+		uint8_t receivedByte = UDR0; // Leer el byte recibido
+		// Obtener los bits específicos usando máscaras y desplazamientos
+		flagp5 = receivedByte & 0x80;  // Bit 7
+		flagp6 = (receivedByte & 0x40); // Bit 6
+		velocidadrecibida = (receivedByte & 0b00111111);  // Bits 5-0
+
 }
+
 
 int main(void)
 {	
 	confpuertos();
 	confinterrupciones();
-	conftimer();
-	confCONVAD();
+	conftimer0();
+	conftimer1();
 	confcomunicacion();
 	sei();												//habilito interrupciones globables
 	Lcd4_Init();				// Inicializa el LCD (siempre debe estar antes de usar el LCD).
@@ -113,87 +144,11 @@ int main(void)
     while (1) 
     {
 		
-		if(!flagp2) calcularvelocidad();		//convierte si no hay un apagado suave
-		
+		if (is_low(flagp2,6) && !sentido)calcularvelocidad();		//convierte si no hay un apagado suave
+		pulsadores();
 //----------Display--------
-		if(motor)
-			sprintf(&buffer[0],"vel: %d%%   on ", velocidaddis);		//carga la velocidad y estado en el buffer
-		else
-			sprintf(&buffer[0],"vel: %d%%   off  ", velocidaddis);  		
-		Lcd4_Set_Cursor(1,0);									// Posiciona cursor en fila 1 (de 2) y columna 0 (de 16).
-		Lcd4_Write_String(buffer);								// Escribe string.
-		if(!direccion)
-			sprintf(&buffer[0],"Horario         ");
-		else
-			sprintf(&buffer[0],"Antihorario     ");
-		Lcd4_Set_Cursor(2,0);
-		Lcd4_Write_String(buffer);
-		if (flagp2)
-			_delay_ms(100);
-		else
-			_delay_ms(4);
 		
-		if (motor)
-		{
-			//sentido antihorario
-			if (direccion)
-			{
-				PORTB=(0<<PB3)|(0<<PB2)|(0<<PB1)|(1<<PB0);
-				delay_ms(velocidad);
-				PORTB=(0<<PB3)|(0<<PB2)|(1<<PB1)|(0<<PB0);
-				delay_ms(velocidad);
-				PORTB=(0<<PB3)|(1<<PB2)|(0<<PB1)|(0<<PB0);
-				delay_ms(velocidad);
-				PORTB=(1<<PB3)|(0<<PB2)|(0<<PB1)|(0<<PB0);
-				delay_ms(velocidad);
-				
-			}
-			else     //sentido horario
-			{
-				PORTB=(1<<PB3)|(0<<PB2)|(0<<PB1)|(0<<PB0);
-				delay_ms(velocidad);
-				PORTB=(0<<PB3)|(1<<PB2)|(0<<PB1)|(0<<PB0);
-				delay_ms(velocidad);
-				PORTB=(0<<PB3)|(0<<PB2)|(1<<PB1)|(0<<PB0);
-				delay_ms(velocidad);
-				PORTB=(0<<PB3)|(0<<PB2)|(0<<PB1)|(1<<PB0);
-				delay_ms(velocidad);
-			}
-			
-		}
-		
-		
-//----------cambio de sentido suave ---------------
-/*
-		if (flag && flagp2)		//arranque suave
-		{
-			vel=+10;
-			motor=1;
-			if (vel>vel_a){
-				velocidaddis=vel_a;
-				tbi(direccion,0);
-				flag=0;
-				flagp2=0;
-				TCCR0B = 0x05;		//habilita el prescaler
-			}
-			else
-				velocidaddis=vel;
-		}
-		
-		if (flagp2	&& !flag)		//apagado suave
-		{
-			vel=-10;
-			if (vel<0){
-				velocidaddis=0;
-				motor=0;
-				tbi(direccion,0);
-				vel=0;
-				flag=1;
-			}
-			else
-				velocidaddis=vel;				
-		}
-	*/																
+		muestradisplay();															
 	} 
 }
 
@@ -222,42 +177,95 @@ void confinterrupciones()
 	EIMSK=(1<<INT0)|(1<<INT1);							//habilita las interrupciones de INT0 e INT1
 	EIFR=0x00;											//borra flag de interupt
 }
-void conftimer()
-{	// Config. Timer0 modo CTC con OCR0A = TOP -> T = (1+OCR0A)*N/16MHz = 10ms.
+void conftimer0(){	// Config. Timer0 modo CTC con OCR0A = TOP -> T = (1+OCR0A)*N/16MHz = 10ms.
 	TCCR0A = 0x02;				// Modo CTC.
 	TCCR0B = 0x05;				// Prescaler N = 1024.
 	TIMSK0 = 0x02;				// Habilita interrupción por igualación.
-	OCR0A = TOP0;				// Carga el valor de TOPE (155).
+	OCR0A = 255;				// Carga el valor de TOPE (255).
 }
 
-void confCONVAD()				// Config. del conversor AD. Opera en modo free-running.
-{	DIDR0 = 0x01;				// Desconecta la parte digital del pin ADC0/PF0.
-	ADMUX = 0x60;				// Config. la ref. de tensión tomada del pin AVCC (placa Arduino AVCC = Vcc = 5V).
-								// Conversión AD de 8 bits (ADLAR = 1) y con el Multiplexor selecciona canal 0 (ADC0/PF0).
-	ADCSRB = 0x00;				// Modo free-running.
-	ADCSRA = 0x87;				// Habilita funcionamiento del ADC (bit ADEN=1) y prescaler en 128.
-}
-
-void convertirAD()													// Convierte el canal seleccionado y calcula media móvil.
-{	ADMUX &= ~((1<<MUX0)|(1<<MUX1)|(1<<MUX2)|(1<<MUX3)|(1<<MUX4));  // Selecciona
-	ADCSRB &= ~(1<<MUX5);											// el canal 0 del ADC.
-	sbi(ADCSRA,ADSC);												// Pone a 1 el bit ADSC para iniciar la conversión.
-	while(is_high(ADCSRA,ADSC))										// Espera a que finalice la conversión. Finaliza la
-	{};																// conversión cuando el bit ADSC retorna a 0.
+void conftimer1(){	// Config. Timer0 modo CTC con OCR0A = TOP -> T = (1+OCR0A)*N/16MHz = 10ms.
+	TCCR1A = 0x00;				// Modo CTC.
+	TIMSK1 = 0x02;				// Habilita interrupción por igualación.
 }
 
 void confcomunicacion()
 {
+	UCSR0C = 0;							// Borra el registro.
+	UCSR0C |= (1<<UPM01)|(1<<UPM00);	// Configura control de error con paridad IMPAR.
+	UCSR0C |= (1<<UCSZ01)|(1<<UCSZ00);	// Configura transmisión de datos de 8 bits.
+	UCSR0C |= (1<<USBS0);				// Configura transmisión con 2 bits de parada.
 	
-	return;	
+	UCSR0B = 0;							// Borra el registro.
+	UCSR0B |= (1<<TXEN0)|(1<<RXEN0)|(1<<RXCIE0);	// Habilita el receptor y la interrupción por recepción completa.
+	
+	UCSR0A = 0;							// Borra el registro.
+	UCSR0A |= (1<<U2X0);				// Habilita velocidad x 2.
+	
+	UBRR0 = VELOCx1;					// Carga valor de ajuste p/transmisión con velocidad deseada (BAUD_3 x 2)
 }
-
 void calcularvelocidad()
 {
-	velocidadtransmitir=63*lecturavel/256.0;	//velocidad a transmitir entre 0 y 63
-	 
-	velocidad=(-150/63.0*velocidadtransmitir)+200;	//velocidad para controlar los leds y motor  
-	velocidaddis=100*velocidadtransmitir/63.0;		//velocidad que se debe mostrar en el display
+	velocidad=(-10000/63.0*velocidadrecibida)+15000;
+	velocidaddis=100*velocidadrecibida/63.0;		//velocidad que se debe mostrar en el display	
+	OCR1A=velocidad;
+}
+void muestradisplay()
+{
+	if(motor)
+		sprintf(&buffer[0],"vel: %d%%   on ", velocidaddis);		//carga la velocidad y estado en el buffer
+	else
+		sprintf(&buffer[0],"vel: %d%%   off  ", velocidaddis);
+	Lcd4_Set_Cursor(1,0);									// Posiciona cursor en fila 1 (de 2) y columna 0 (de 16).
+	Lcd4_Write_String(buffer);								// Escribe string.
+	if(!direccion)
+		sprintf(&buffer[0],"Horario         ");
+	else
+		sprintf(&buffer[0],"Antihorario     ");
+	Lcd4_Set_Cursor(2,0);
+	Lcd4_Write_String(buffer);
+	_delay_ms(4);
+}
+
+void pulsadores()
+{
+	if (is_high(flagp1,7) || is_high(flagp5,7))
+	{
+		tbi(motor,0);
+		flagp1=0x00;
+		flagp2=0x00;
+		flagp5=0x00;
+		flagp6=0x00;
+		TCCR1B = (motor) ? 0x0D : 0x00;				// Prescaler N = 1024.
+		PORTB=0x00;
+		cont = (direccion) ? 3 : 0 ;
+	}
+	
+	if (is_high(flagp2,6) || is_high(flagp6,6) || sentido )		//si esta apagado toglea la direccion
+	{
+		if(is_low(motor,0))
+		{
+			tbi(direccion,0);
+			flagp2=0x00;
+			flagp6=0x00;
+		}
+		if(is_high(motor,0))
+		{
+			sentido=1;
+			velocidad+=5000;
+			OCR1A=velocidad;
+			if(velocidad>40000)
+			{
+				tbi(motor,0);
+				flagp2=0x00;
+				flagp6=0x00;
+				tbi(direccion,0);
+				flagp1=0x80;
+				sentido=0;
+			}
+		}
+	}
+	flag=1;
 }
 
 void delay_ms(int t)
@@ -265,7 +273,3 @@ void delay_ms(int t)
 	while(t--)
 	_delay_ms(1);
 }
-
-
-
-
